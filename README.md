@@ -8,6 +8,8 @@ The application uses a React/Vite frontend and a Node.js/Express API. Requests t
 
 - **Voice enrollment:** Submit an authorized recording with a name and explicit consent confirmation.
 - **Audio upload validation:** Accepts supported audio formats, checks file signatures, and enforces a 10 MB upload limit.
+- **Session-scoped voice ownership:** Speech generation only accepts voice IDs enrolled in the current signed browser session.
+- **Voice management:** List the current session’s voice profiles and request provider-side deletion of an owned voice.
 - **Text-to-speech:** Generate speech from text using a created voice.
 - **Audio playback and download:** Preview generated audio in the browser and download the returned MP3.
 - **Server-side provider access:** The ElevenLabs API key is sent only by the server.
@@ -24,6 +26,7 @@ Browser (React + Vite)
         v
 Node.js + Express
   ├── Session/password gate
+  ├── Session-scoped voice registry and ownership checks
   ├── Request, text, and upload validation
   ├── Rate limits and security headers
   └── ElevenLabs API client
@@ -124,8 +127,10 @@ The Express server exposes these application endpoints:
 | `GET` | `/api/session` | Report the current authentication state |
 | `POST` | `/api/login` | Check the configured shared password and set a signed session cookie |
 | `POST` | `/api/logout` | Clear the session cookie |
-| `POST` | `/api/voices/clone` | Validate consent and recording, then request voice cloning |
-| `POST` | `/api/speech` | Validate text and voice ID, then return generated MP3 audio |
+| `POST` | `/api/voices/clone` | Validate consent and recording, create a provider voice, and register it to the current session |
+| `GET` | `/api/voices` | List voice profiles registered to the current session |
+| `DELETE` | `/api/voices/:voiceId` | Delete a voice from the provider only when it belongs to the current session |
+| `POST` | `/api/speech` | Require current-session ownership, then return generated MP3 audio |
 
 The clone endpoint expects multipart form data containing `audio`, `name`, and `consent=true`. The speech endpoint expects JSON containing `text` and `voiceId`. Protected operations require a valid session when authentication is enabled.
 
@@ -137,8 +142,9 @@ The clone endpoint expects multipart form data containing `audio`, `name`, and `
 - Keep the application and dependencies updated. Monitor provider usage and configure provider-side spending limits.
 - Current rate limits are in-memory and primarily IP-based. They are a baseline, not a substitute for identity-aware quotas, monitoring, or a shared rate-limit store in a multi-instance deployment.
 - The current password gate is a **single shared password**, not individual user accounts. It does not provide per-user isolation or a database-backed voice ownership registry.
-- The speech endpoint validates the syntax of a voice ID but does not maintain an owner-to-voice mapping. Do not treat a valid voice ID as proof that the caller is authorized to use that voice.
-- The app does not currently provide a verified provider-side voice deletion workflow. Removing a local reference does not remove a voice stored by the provider. Establish and document a retention/deletion process before offering a multi-user production service.
+- Voice IDs are checked against a process-local registry scoped to the signed browser session. A valid ID alone is not proof of ownership. This is a useful isolation guard, but it is **not** a replacement for individual user accounts or durable authorization.
+- The Delete voice action calls the provider’s voice-deletion endpoint and removes the local registry entry only after provider success. Confirm that the configured provider account and API key have the required permissions; deletion is a real provider-side action and may be irreversible.
+- The registry is in memory. A server restart or deployment to another instance loses ownership records even though provider-side voices may still exist. Use a durable database and a defined retention/recovery process before production multi-user use.
 - The app does not persist uploaded recordings to disk, but the recording is sent to the configured provider. Review the provider's current consent, eligibility, processing, and retention terms before use.
 
 ## Testing and verification
@@ -157,8 +163,9 @@ The test suite covers request/input validation, including audio file checks. The
 ## Current limitations
 
 - Shared-password authentication only; no individual accounts.
-- No persistent voice registry or per-user voice authorization.
-- No built-in provider-side voice deletion or retention management.
+- Voice registry is session-scoped but in-memory; records are lost on restart and are not shared across server instances.
+- Shared-password authentication remains; sessions are not individual user accounts.
+- Provider-side deletion is implemented, but retention policy and recovery of orphaned provider voices remain operational responsibilities.
 - Rate limits use the default in-memory store and are not shared across multiple server instances.
 - Audio signature validation is not a full media decoder or malware scan.
 - Provider integration and account permissions require separate live verification.

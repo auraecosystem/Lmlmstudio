@@ -5,6 +5,7 @@ import rateLimit from "express-rate-limit";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { VoiceRegistry } from "./voice-registry.js";
 import {
   MAX_AUDIO_BYTES, MAX_TEXT_LENGTH, validateAudioFile,
   validateSpeechText, validateVoiceId, validateVoiceName
@@ -14,11 +15,12 @@ const app = express();
 const port = Number(process.env.PORT || 8787);
 const isProduction = process.env.NODE_ENV === "production";
 const appPassword = process.env.APP_PASSWORD;
-const sessionSecret = process.env.SESSION_SECRET;
+const sessionSecret = process.env.SESSION_SECRET || (!isProduction ? crypto.randomBytes(32).toString("hex") : undefined);
 const apiKey = process.env.ELEVENLABS_API_KEY;
 const modelId = process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2";
 const sessionCookie = "lmlm_voice_session";
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
+const voiceRegistry = new VoiceRegistry();
 
 if (isProduction && (!appPassword || !sessionSecret || !apiKey)) {
   throw new Error("Production requires ELEVENLABS_API_KEY, APP_PASSWORD, and SESSION_SECRET.");
@@ -53,7 +55,7 @@ function readSession(req) {
   if (!safeEqual(signature, expected)) return false;
   try {
     const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    return data.exp > Math.floor(Date.now() / 1000);
+    return data.exp > Math.floor(Date.now() / 1000) && typeof data.sid === "string" ? data : false;
   } catch { return false; }
 }
 function requireSession(req, res, next) {
@@ -61,12 +63,19 @@ function requireSession(req, res, next) {
   if (readSession(req)) return next();
   return res.status(401).json({ error: "Please sign in to use the voice studio." });
 }
-function setSessionCookie(res) {
+function setSessionCookie(res, sessionId = crypto.randomUUID()) {
   const exp = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
-  const value = signSession({ exp });
+  const value = signSession({ exp, sid: sessionId });
   const flags = ["HttpOnly", "SameSite=Strict", "Path=/", `Max-Age=${SESSION_TTL_SECONDS}`];
   if (isProduction) flags.push("Secure");
   res.setHeader("Set-Cookie", `${sessionCookie}=${value}; ${flags.join("; ")}`);
+}
+function sessionIdFor(req, res) {
+  const session = readSession(req);
+  if (session?.sid) return session.sid;
+  const sessionId = crypto.randomUUID();
+  setSessionCookie(res, sessionId);
+  return sessionId;
 }
 function clearSessionCookie(res) {
   const flags = ["HttpOnly", "SameSite=Strict", "Path=/", "Max-Age=0"];
@@ -101,7 +110,7 @@ async function providerFetch(url, options) {
 app.get("/api/health", (_req, res) => res.json({ ok: true, authRequired: Boolean(appPassword && sessionSecret) }));
 app.get("/api/session", (req, res) => {
   const authRequired = Boolean(appPassword && sessionSecret) || isProduction;
-  res.json({ authenticated: !authRequired || readSession(req), authRequired });
+  res.json({ authenticated: !authRequired || Boolean(readSession(req)), authRequired });
 });
 app.post("/api/login", loginLimiter, (req, res) => {
   if (!appPassword || !sessionSecret) {
@@ -111,7 +120,7 @@ app.post("/api/login", loginLimiter, (req, res) => {
   if (typeof req.body?.password !== "string" || !safeEqual(req.body.password, appPassword)) {
     return res.status(401).json({ error: "Incorrect password." });
   }
-  setSessionCookie(res);
+  setSessionCookie(res, crypto.randomUUID());
   return res.json({ authenticated: true, authRequired: true });
 });
 app.post("/api/logout", (_req, res) => {
@@ -140,10 +149,31 @@ app.post("/api/voices/clone", requireSession, cloneLimiter, upload.single("audio
     const response = await providerFetch("https://api.elevenlabs.io/v1/voices/add", { method: "POST", body: form });
     const result = await response.json();
     if (!result.voice_id) return res.status(502).json({ error: "Provider did not return a voice ID." });
-    return res.status(201).json({ voiceId: result.voice_id, name: req.body.name.trim() });
+    const voice = voiceRegistry.add(sessionIdFor(req, res), { id: result.voice_id, name: req.body.name.trim() });
+    return res.status(201).json({ voiceId: voice.id, name: voice.name });
   } catch (error) {
     const status = error instanceof multer.MulterError ? (error.code === "LIMIT_FILE_SIZE" ? 413 : 400) : (error.status || 502);
     return res.status(status).json({ error: error instanceof multer.MulterError ? "Recording is too large or the upload is invalid." : error.message || "Could not create the voice clone." });
+  }
+});
+
+app.get("/api/voices", requireSession, (req, res) => {
+  return res.json({ voices: voiceRegistry.list(sessionIdFor(req, res)) });
+});
+
+app.delete("/api/voices/:voiceId", requireSession, async (req, res) => {
+  const voiceError = validateVoiceId(req.params.voiceId);
+  if (voiceError) return res.status(400).json({ error: voiceError });
+  const sessionId = sessionIdFor(req, res);
+  if (!voiceRegistry.owns(sessionId, req.params.voiceId)) {
+    return res.status(404).json({ error: "Voice not found in this session." });
+  }
+  try {
+    await providerFetch(`https://api.elevenlabs.io/v1/voices/${encodeURIComponent(req.params.voiceId)}`, { method: "DELETE" });
+    voiceRegistry.remove(sessionId, req.params.voiceId);
+    return res.status(204).end();
+  } catch (error) {
+    return res.status(error.status || 502).json({ error: error.message || "Could not delete the voice from the provider." });
   }
 });
 
@@ -154,6 +184,10 @@ app.post("/api/speech", requireSession, speechLimiter, async (req, res) => {
   if (text.length > MAX_TEXT_LENGTH) return res.status(400).json({ error: "Text is too long." });
   const voiceError = validateVoiceId(req.body?.voiceId);
   if (voiceError) return res.status(400).json({ error: voiceError });
+  const sessionId = sessionIdFor(req, res);
+  if (!voiceRegistry.owns(sessionId, req.body.voiceId)) {
+    return res.status(403).json({ error: "You can only generate speech with a voice created in this session." });
+  }
 
   try {
     const response = await providerFetch(
