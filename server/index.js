@@ -15,7 +15,7 @@ const app = express();
 const port = Number(process.env.PORT || 8787);
 const isProduction = process.env.NODE_ENV === "production";
 const appPassword = process.env.APP_PASSWORD;
-const sessionSecret = process.env.SESSION_SECRET;
+const sessionSecret = process.env.SESSION_SECRET || (!isProduction ? crypto.randomBytes(32).toString("hex") : undefined);
 const apiKey = process.env.ELEVENLABS_API_KEY;
 const modelId = process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2";
 const sessionCookie = "lmlm_voice_session";
