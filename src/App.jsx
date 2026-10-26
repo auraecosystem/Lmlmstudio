@@ -25,9 +25,17 @@ export default function App() {
   const fileInput = useRef(null);
 
   useEffect(() => {
-    fetch("/api/session").then(readJson).then(setSession).catch(() => setSession({ loading: false, authenticated: false, authRequired: true }));
+    fetch("/api/session").then(readJson).then(async (state) => {
+      setSession({ ...state, loading: false });
+      if (state.authenticated || !state.authRequired) await loadOwnedVoices();
+    }).catch(() => setSession({ loading: false, authenticated: false, authRequired: true }));
     return () => { if (audioUrl) URL.revokeObjectURL(audioUrl); };
   }, [audioUrl]);
+
+  async function loadOwnedVoices() {
+    const result = await readJson(await fetch("/api/voices"));
+    setVoice(result.voices?.at(-1) ? { id: result.voices.at(-1).id, name: result.voices.at(-1).name } : null);
+  }
 
   async function signIn(event) {
     event.preventDefault(); setBusy("login"); setError("");
@@ -37,6 +45,7 @@ export default function App() {
       }));
       setSession({ loading: false, authenticated: result.authenticated, authRequired: result.authRequired });
       setPassword("");
+      await loadOwnedVoices();
     } catch (e) { setError(e.message); }
     finally { setBusy(""); }
   }
@@ -53,6 +62,17 @@ export default function App() {
       const result = await readJson(await fetch("/api/voices/clone", { method: "POST", body: form }));
       setVoice({ id: result.voiceId, name: result.name });
       setNotice("Voice clone created. You can now generate speech with it.");
+    } catch (e) { setError(e.message); }
+    finally { setBusy(""); }
+  }
+
+  async function deleteVoice() {
+    if (!voice?.id) return;
+    setBusy("delete"); setError(""); setNotice("");
+    try {
+      await readJson(await fetch(`/api/voices/${encodeURIComponent(voice.id)}`, { method: "DELETE" }));
+      setVoice(null); setAudioUrl("");
+      setNotice("Voice deleted from the provider and removed from this session.");
     } catch (e) { setError(e.message); }
     finally { setBusy(""); }
   }
@@ -139,7 +159,7 @@ export default function App() {
             <label className="consent"><input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} /><span>I confirm I own this voice or have explicit permission to create this clone.</span></label>
             <button className="primary full" type="submit" disabled={busy === "clone" || !file || !consent}>{busy === "clone" ? <><span className="spinner" /> Creating voice…</> : <>Create voice clone <span>↗</span></>}</button>
           </form>
-          {voice && <div className="voice-created"><span className="voice-avatar">♫</span><div><b>{voice.name}</b><small>Voice profile ready · {voice.id.slice(0, 8)}…</small></div><span className="checkmark">✓</span><button className="quiet" type="button" onClick={() => setVoice(null)}>Reset</button></div>}
+          {voice && <div className="voice-created"><span className="voice-avatar">♫</span><div><b>{voice.name}</b><small>Voice profile ready · {voice.id.slice(0, 8)}…</small></div><span className="checkmark">✓</span><button className="quiet" type="button" disabled={busy === "delete"} onClick={deleteVoice}>{busy === "delete" ? "Deleting…" : "Delete voice"}</button></div>}
           <p className="privacy-note"><span>◇</span> Recording is held in server memory for forwarding and isn’t saved to this app’s disk. The provider may process or retain voice data under its own terms.</p>
         </section>
 
