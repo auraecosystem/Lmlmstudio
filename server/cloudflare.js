@@ -10,7 +10,7 @@ const DNS_TYPES = new Set([
 
 export function normalizeDomain(value) {
   if (typeof value !== "string") return null;
-  const domain = value.trim().toLowerCase().replace(/\\.$/, "");
+  const domain = value.trim().toLowerCase().replace(/\.$/, "");
   if (!domain || domain.length > 253 || domain.includes("://") || domain.includes("/")) return null;
   const labels = domain.split(".");
   if (labels.length < 2 || labels.some((label) => !DOMAIN_LABEL.test(label))) return null;
