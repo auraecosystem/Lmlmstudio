@@ -23,7 +23,7 @@ test("audio upload enforces MIME type, non-empty data, and size", () => {
   assert.match(validateAudioFile({ mimetype: "text/plain", size: 10 }), /Unsupported/);
   assert.match(validateAudioFile({ mimetype: "audio/mpeg", size: 0 }), /empty/);
   assert.match(validateAudioFile({ mimetype: "audio/mpeg", size: MAX_AUDIO_BYTES + 1 }), /10 MB/);
-  assert.equal(validateAudioFile({ mimetype: "audio/mpeg", size: 1024 }), null);
+  assert.equal(validateAudioFile({ mimetype: "audio/mpeg", size: 1024, buffer: Buffer.from("ID3\\u0004\\u0000\\u0000") }), null);
 });
 
 test("voice IDs reject empty and unsafe input", () => {
