@@ -141,6 +141,58 @@ The clone endpoint expects multipart form data containing `audio`, `name`, and `
 - The app does not currently provide a verified provider-side voice deletion workflow. Removing a local reference does not remove a voice stored by the provider. Establish and document a retention/deletion process before offering a multi-user production service.
 - The app does not persist uploaded recordings to disk, but the recording is sent to the configured provider. Review the provider's current consent, eligibility, processing, and retention terms before use.
 
+## Optional Cloudflare infrastructure adapter
+
+LMLM Studio can optionally manage Cloudflare zones and DNS records through a server-side adapter. This is separate from voice cloning and does not require Cloudflare credentials unless you use these endpoints.
+
+Configure the following server environment variables:
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Optional | Cloudflare API token with the minimum required Zone read/edit permissions for the target account |
+| `CLOUDFLARE_ACCOUNT_ID` | Optional | Cloudflare account ID used when creating and listing zones |
+
+Keep the token in the server secret manager. Never expose it through a `VITE_*` variable or return it from an API endpoint. The adapter is disabled until both values are configured. All management endpoints use the application's existing session gate and an additional rate limit.
+
+### Cloudflare API endpoints
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/cloudflare/status` | Report whether Cloudflare credentials are configured (never returns credentials) |
+| `GET` | `/api/cloudflare/zones` | List zones in the configured account, including activation status and assigned nameservers |
+| `POST` | `/api/cloudflare/zones` | Create between 1 and 50 full DNS zones |
+| `GET` | `/api/cloudflare/zones/:zoneId/dns` | List DNS records for a zone |
+| `POST` | `/api/cloudflare/zones/:zoneId/dns` | Create a validated DNS record |
+| `DELETE` | `/api/cloudflare/zones/:zoneId/dns/:recordId` | Delete a DNS record |
+
+Create zones with JSON:
+
+```json
+{
+  "domains": ["example.com", "example.org"]
+}
+```
+
+Create a DNS record with JSON:
+
+```json
+{
+  "type": "A",
+  "name": "www.example.com",
+  "content": "192.0.2.10",
+  "ttl": 1,
+  "proxied": false
+}
+```
+
+MX records additionally require an integer `priority`. Supported record types are A, AAAA, CNAME, MX, TXT, NS, SRV, CAA, and PTR. The bulk zone operation reports each domain's result; it does not silently retry failed creations. A successfully created zone still requires the registrar to delegate the assigned Cloudflare nameservers before it becomes active. DNS changes and zone creation are real Cloudflare account mutations, so protect the API token and restrict access to trusted operators.
+
+Run the validation and existing application checks with:
+
+```sh
+npm run check
+```
+
 ## Testing and verification
 
 Run the automated checks locally:

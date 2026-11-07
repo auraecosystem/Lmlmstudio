@@ -5,6 +5,7 @@ import rateLimit from "express-rate-limit";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createCloudflareRouter } from "./cloudflare.js";
 import {
   MAX_AUDIO_BYTES, MAX_TEXT_LENGTH, validateAudioFile,
   validateSpeechText, validateVoiceId, validateVoiceName
@@ -114,6 +115,8 @@ app.post("/api/login", loginLimiter, (req, res) => {
   setSessionCookie(res);
   return res.json({ authenticated: true, authRequired: true });
 });
+app.use("/api/cloudflare", createCloudflareRouter(requireSession));
+
 app.post("/api/logout", (_req, res) => {
   clearSessionCookie(res);
   res.json({ authenticated: false });
